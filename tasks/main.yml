@@ -11,3 +11,56 @@
   tags:
     - configuration
     - packages
+
+- name: disable selinux
+  selinux: state=disabled
+  tags:
+    - packages
+
+- name: add kolab repository
+  yum_repository:
+    name: Kolab-16
+    description: "Kolab 16: Stable Release (CentOS_7)"
+    baseurl: http://obs.kolabsys.com/repositories/Kolab:/16/CentOS_7/
+    gpgcheck: yes
+  tags:
+    - packages
+
+- name: add tpriority
+  lineinfile: 
+    dest: "/etc/yum.repos.d/Kolab-16.repo" 
+    line: "tpriority = 60"
+  tags:
+    - packages
+
+- name: add type
+  lineinfile: 
+    dest: "/etc/yum.repos.d/Kolab-16.repo" 
+    line: "type = rpm-md"
+  tags:
+    - packages
+
+- name: import the GPG key used to sign the packages
+  rpm_key: 
+    state: present 
+    key: https://ssl.kolabsys.com/community.asc
+  tags:
+    - packages
+
+- name: install yum-plugin-priorities
+  yum: 
+    name: yum-plugin-priorities 
+    state: latest
+  tags:
+    - configuration
+
+- name: install kolab
+  yum: 
+    name: kolab
+    state: latest 
+  register: result
+  until: '"failed" not in result'
+  retries: 5
+  delay: 10 
+  tags:
+    - packages
