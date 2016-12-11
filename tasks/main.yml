@@ -52,7 +52,7 @@
     name: yum-plugin-priorities 
     state: latest
   tags:
-    - configuration
+    - packages
 
 - name: install kolab
   yum: 
@@ -64,3 +64,16 @@
   delay: 10 
   tags:
     - packages
+
+- name: check is kolab install
+  command: "timeout 5s setup-kolab"
+  register: check_kolab
+  failed_when: '"" in check_kolab'
+  tags:
+    - configuration
+
+- name: setup kolab
+  shell: "echo 2 | setup-kolab --default --timezone=Europe/Brussels --directory-manager-pwd={{ kolab.password }}"
+  when: '"existing" not in check_kolab.stderr'
+  tags:
+    - configuration
