@@ -58,8 +58,8 @@
   yum: 
     name: kolab
     state: latest 
-  register: result
-  until: '"failed" not in result'
+  register: kolab_install
+  until: '"failed" not in kolab_install'
   retries: 5
   delay: 10 
   tags:
@@ -67,15 +67,15 @@
 
 - name: check is kolab install
   command: "timeout 5s setup-kolab"
-  register: check_kolab
-  failed_when: '"" in check_kolab'
+  register: kolab_check
+  failed_when: '"" in kolab_check'
   tags:
     - configuration
 
 - name: setup kolab
   shell: "echo 2 | setup-kolab --default --timezone=Europe/Brussels --directory-manager-pwd={{ kolab.password }}"
-  when: '"existing" not in check_kolab.stderr'
-  register: setup_kolab
+  when: '"existing" not in kolab_check.stderr'
+  register: kolab_setup
   tags:
     - configuration
 
@@ -85,24 +85,50 @@
     regexp: "{{ item.regexp }}" 
     line: "{{ item.line }}" 
     backup: yes
-  register: configure_kolab
+  register: kolab_configure
   with_items:
     - { regexp: 'policy_uid =', line: "policy_uid = %(givenname)s'[0:1]%(surname)s.lower()" }
     - { regexp: 'primary_mail', line: "primary_mail = %(givenname)s'[0:1].%(surname)s@%(domain)s" }
+  tags:
+    - configuration
 
 - name: kolab patch load
   git: 
     repo: https://github.com/TBits/KolabScripts.git 
     dest: /root/scripts/kolab 
     version: Kolab16
+    update: yes
+  register: kolab_patch
+  tags:
+    - configuration
+
+- name: change kolb patch premisson 
+  file: path="/root/scripts/kolab/kolab" owner=root group=root mode="0700"
+  tags:
+    - configuration
+
+- name: kolab script run
+  shell: "bash /root/scripts/kolab/kolab/{{ item }} 1>/dev/null"
+  with_items:
+    - initRoundcubePlugins.sh
+    - initMultiDomain.sh
+    - initMailForward.sh
+    - initMailCatchall.sh
+  when: kolab_patch.changed
+  tags:
+    - configuration
 
 - name: restart machine
-  shell: sleep 2 && shutdown -r now "Ansible updates triggered"
+  shell: "sleep 2 && shutdown -r now 'Ansible updates triggered'"
   async: 1
   poll: 0
   register: restart
-  when: setup_kolab.changed or configure_kolab.changed
+  when: kolab_setup.changed or kolab_configure.changed
+  tags:
+    - configuration
 
 - name: waiting for server to come back
   local_action: wait_for host={{ inventory_hostname }} state=started delay=30 timeout=300
   when: restart.changed
+  tags:
+    - configuration
