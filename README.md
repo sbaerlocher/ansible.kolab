@@ -29,6 +29,10 @@ $ ansible-galaxy install sbaerlocher.kolab
 
 ## Changelog
 
+### 1.0
+
+* initial release
+
 ## Author
 
 * [Simon Bärlocher](https://sbaerlocher.ch)
