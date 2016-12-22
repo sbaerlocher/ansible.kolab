@@ -3,3 +3,16 @@
 
 kolab:
   password:
+
+domains: []
+
+custom_login:
+  - domain:
+    logo:
+    favicon:
+
+my_role_somerepo_params:
+  # Disable GPG checking
+  gpgcheck: no
+  # Remove the gpgkey option
+  gpgkey: null

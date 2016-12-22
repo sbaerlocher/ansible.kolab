@@ -17,43 +17,45 @@
   tags:
     - packages
 
-- name: add kolab repository
-  yum_repository:
-    name: Kolab-16
-    description: "Kolab 16: Stable Release (CentOS_7)"
-    baseurl: http://obs.kolabsys.com/repositories/Kolab:/16/CentOS_7/
-    gpgcheck: yes
+- name: check Kolab repo exist
+  stat:
+    path: /etc/yum.repos.d/Kolab-16.repo
+  register: kolab_check_repo
   tags:
     - packages
 
-- name: add tpriority
-  lineinfile: 
-    dest: "/etc/yum.repos.d/Kolab-16.repo" 
-    line: "tpriority = 60"
+- block:
+  - name: add kolab repository
+    yum_repository:
+      name: Kolab-16
+      description: "Kolab 16: Stable Release (CentOS_7)"
+      baseurl: http://obs.kolabsys.com/repositories/Kolab:/16/CentOS_7/
+      gpgcheck: yes
+      priority: 60
+
+  - name: import the GPG key used to sign the packages
+    rpm_key: 
+      state: present 
+      key: https://ssl.kolabsys.com/community.asc
+  
+  - name: add tpriority
+    lineinfile: 
+      dest: "/etc/yum.repos.d/Kolab-16.repo" 
+      line: "tpriority = 60"
+  
+  - name: add type
+    lineinfile: 
+      dest: "/etc/yum.repos.d/Kolab-16.repo" 
+      line: "type = rpm-md"
+  
+  - name: install yum-plugin-priorities
+    yum: 
+      name: yum-plugin-priorities 
+      state: latest
   tags:
     - packages
-
-- name: add type
-  lineinfile: 
-    dest: "/etc/yum.repos.d/Kolab-16.repo" 
-    line: "type = rpm-md"
-  tags:
-    - packages
-
-- name: import the GPG key used to sign the packages
-  rpm_key: 
-    state: present 
-    key: https://ssl.kolabsys.com/community.asc
-  tags:
-    - packages
-
-- name: install yum-plugin-priorities
-  yum: 
-    name: yum-plugin-priorities 
-    state: latest
-  tags:
-    - packages
-
+  when: kolab_check_repo.stat.exists == false
+  
 - name: install kolab
   yum: 
     name: kolab
@@ -79,6 +81,33 @@
   tags:
     - configuration
 
+# Disable version info
+- block:
+  - name: disable httpd version
+    lineinfile: 
+      dest: "/etc/httpd/conf/httpd.conf"
+      regexp: "{{ item.regexp }}" 
+      line: "{{ item.line }}" 
+      backup: yes
+    with_items:
+      - { regexp: "ServerTokens", line: "ServerTokens ProductOnly" }
+      - { regexp: "ServerSignature", line: "ServerSignature Off" }
+    notify: 
+      - restart httpd
+
+  - name: disable php version
+    lineinfile: 
+      dest: "/etc/php.ini"
+      regexp: "{{ item.regexp }}" 
+      line: "{{ item.line }}" 
+      backup: yes
+    with_items:
+      - { regexp: "expose_php = On", line: "expose_php = off" }
+    notify: 
+      - restart httpd
+  tags:
+    - configuration
+
 - name: configure kolab.conf
   lineinfile: 
     dest: /etc/kolab/kolab.conf 
@@ -87,34 +116,132 @@
     backup: yes
   register: kolab_configure
   with_items:
-    - { regexp: 'policy_uid =', line: "policy_uid = %(givenname)s'[0:1]%(surname)s.lower()" }
-    - { regexp: 'primary_mail', line: "primary_mail = %(givenname)s'[0:1].%(surname)s@%(domain)s" }
+    - { regexp: 'policy_uid =', line: "policy_uid = '%(givenname)s'[0:1]%(surname)s.lower()" }
+    - { regexp: 'primary_mail =', line: "primary_mail = '%(givenname)s'[0:1].%(surname)s@%(domain)s" }
+  notify: 
+    - restart kolab
   tags:
     - configuration
 
-- name: kolab patch load
-  git: 
-    repo: https://github.com/TBits/KolabScripts.git 
-    dest: /root/scripts/kolab 
-    version: Kolab16
-    update: yes
-  register: kolab_patch
+# Kolab Patch for Multidomains
+- block:
+  - name: kolab patch load
+    git: 
+      repo: https://github.com/TBits/KolabScripts.git 
+      dest: /root/scripts/kolab 
+      version: Kolab16
+      update: yes
+    register: kolab_patch
+
+  - name: change kolb patch premisson 
+    file: 
+      path: "/root/scripts/kolab/kolab" 
+      owner: root 
+      group: root 
+      mode: "0700"
+
+  - name: kolab script run
+    shell: "bash /root/scripts/kolab/kolab/{{ item }} 1>/dev/null"
+    with_items:
+      - initRoundcubePlugins.sh
+      - initMultiDomain.sh
+      - initMailForward.sh
+      - initMailCatchall.sh
+    when: kolab_patch.changed
+
+  - name: configure kolab.conf
+    lineinfile: 
+      dest: "/usr/share/roundcubemail/program/localization/{{ item.lang }}/labels.inc"
+      regexp: "{{ item.regexp }}" 
+      line: "{{ item.line }}" 
+      backup: yes
+    with_items:
+      - { regexp: "username", line: "$labels['username']  = 'Email';", lang: "en_US" }
+      - { regexp: "username", line: "$labels['username']  = 'Email';", lang: "de_DE" }
+      - { regexp: "username", line: "$labels['username']  = 'Email';", lang: "de_CH" }
+
+  # SSL enable with certbot
+  - block:
+    - name: add folder for certbot
+      blockinfile: 
+        dest: "/etc/httpd/conf/httpd.conf" 
+        block: |
+          <VirtualHost _default_:80>
+          Alias /.well-known /var/www/html/.well-known
+          RewriteEngine On
+          RewriteCond %{REQUEST_FILENAME} !.well-known
+          RewriteRule ^(.*)$ https://%{HTTP_HOST}$1 [R=301,L]
+          </VirtualHost>
+      register: kolab_change_httpd
+
+    - name: restart http
+      service: 
+        name: httpd
+        state: restarted
+      when: kolab_change_httpd.changed
+
+    - name: create {{ kolab_url }} zert
+      shell: certbot certonly --webroot -w /var/www/html/ -d {{ kolab_url }} --non-interactive --agree-tos --email webmaster@{{ kolab_url }}
+      args:
+        creates: /etc/letsencrypt/live/{{ kolab_url }}
+
+    - name: link cert
+      file:
+        src: /etc/letsencrypt/live/{{ kolab_url }}/{{ item.src }}
+        dest: /etc/pki/tls/{{ item.dest }}
+        state: link
+      register: kolab_cert_link
+      with_items:
+        - { src: 'privkey.pem', dest: 'private/{{ kolab_url }}.key' }
+        - { src: 'cert.pem', dest: 'certs/{{ kolab_url }}.crt' }
+        - { src: 'fullchain.pem', dest: 'certs/{{ kolab_url }}.ca-chain.pem' }
+
+    - name: kolab script run
+      shell: "bash /root/scripts/kolab/kolab/{{ item }} {{ kolab_url }} 1>/dev/null"
+      with_items:
+        - initSSL.sh
+      when: kolab_cert_link.changed
+
+    - name: add certbot cron
+      cron:
+        name: "certbot"
+        hour: "2"
+        job: '/usr/bin/certbot renew --quiet --no-self-upgrade --post-hook "service httpd restart"'
   tags:
     - configuration
 
-- name: change kolb patch premisson 
-  file: path="/root/scripts/kolab/kolab" owner=root group=root mode="0700"
+- block:
+  - name: create zert custom login
+    shell: certbot certonly --webroot -w /var/www/html/ -d {{ item.domain }} --non-interactive
+    args:
+      creates: /etc/letsencrypt/live/{{ item.domain }}
+    with_items:
+      - "{{ custom_login }}"
+
+  - name: custom login
+    template:
+      src: vhost.j2
+      dest: /etc/httpd/conf.d/{{ item.domain }}.conf
+      owner: root
+      group: root
+      mode: "0644"
+    with_items:
+      - "{{ custom_login }}"
+    notify: 
+      - restart httpd
   tags:
     - configuration
 
-- name: kolab script run
-  shell: "bash /root/scripts/kolab/kolab/{{ item }} 1>/dev/null"
-  with_items:
-    - initRoundcubePlugins.sh
-    - initMultiDomain.sh
-    - initMailForward.sh
-    - initMailCatchall.sh
-  when: kolab_patch.changed
+- block:
+  - name: check Domains list
+    shell: "kolab list-domains"
+    register: kolab_domains_list
+
+  - name: add Domain
+    shell: "kolab add-domain {{ item }}"
+    with_items:
+      - "{{ domains }}"
+    when: item is defined and item not in kolab_domains_list.stdout
   tags:
     - configuration
 
@@ -123,12 +250,13 @@
   async: 1
   poll: 0
   register: restart
+  ignore_errors: true
   when: kolab_setup.changed or kolab_configure.changed
   tags:
     - configuration
 
 - name: waiting for server to come back
-  local_action: wait_for host={{ inventory_hostname }} state=started delay=30 timeout=300
+  local_action: wait_for host={{ inventory_hostname }} state=started delay=30
   when: restart.changed
   tags:
     - configuration

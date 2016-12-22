@@ -1,2 +1,8 @@
 ---
 # handlers file for sbaerlocher.kolab
+
+- name: restart httpd
+  service: name=httpd state=restarted
+
+- name: restart kolab
+  service: name=kolabd state=restarted
