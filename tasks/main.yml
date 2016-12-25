@@ -12,15 +12,16 @@
     - configuration
     - packages
 
-- name: disable selinux
-  selinux: state=disabled
-  tags:
-    - packages
+- name: SELinux disable
+  selinux: 
+    state: disabled
+  when: ansible_distribution == 'CentOS'
 
-- name: check Kolab repo exist
+- name: check kolab repo exist
   stat:
     path: /etc/yum.repos.d/Kolab-16.repo
   register: kolab_check_repo
+  when: ansible_distribution == 'CentOS'
   tags:
     - packages
 
@@ -54,8 +55,8 @@
       state: latest
   tags:
     - packages
-  when: kolab_check_repo.stat.exists == false
-  
+  when: kolab_check_repo.stat.exists == false and ansible_distribution == 'CentOS'
+
 - name: install kolab
   yum: 
     name: kolab
@@ -64,6 +65,7 @@
   until: '"failed" not in kolab_install'
   retries: 5
   delay: 10 
+  when: ansible_distribution == 'CentOS'
   tags:
     - packages
 
@@ -83,26 +85,30 @@
 
 # Disable version info
 - block:
-  - name: disable httpd version
+  - name: add config httpd.conf
     lineinfile: 
       dest: "/etc/httpd/conf/httpd.conf"
-      regexp: "{{ item.regexp }}" 
+      regexp: "^(.*){{ item.regexp }}(.*)$" 
       line: "{{ item.line }}" 
       backup: yes
     with_items:
       - { regexp: "ServerTokens", line: "ServerTokens ProductOnly" }
       - { regexp: "ServerSignature", line: "ServerSignature Off" }
+      - { regexp: "SSLCipherSuite", line: "SSLCipherSuite ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-SHA384:ECDHE-RSA-AES256-SHA384:ECDHE-ECDSA-AES128-SHA256:ECDHE-RSA-AES128-SHA256" }
+      - { regexp: "SSLProtocol", line: "SSLProtocol all -SSLv3 -TLSv1 -TLSv1.1" }
+      - { regexp: "SSLHonorCipherOrder", line: "SSLHonorCipherOrder on" }
+      - { regexp: "SSLCompression", line: "SSLCompression off" }
     notify: 
       - restart httpd
 
   - name: disable php version
     lineinfile: 
       dest: "/etc/php.ini"
-      regexp: "{{ item.regexp }}" 
+      regexp: "^(.*){{ item.regexp }}(.*)$" 
       line: "{{ item.line }}" 
       backup: yes
     with_items:
-      - { regexp: "expose_php = On", line: "expose_php = off" }
+      - { regexp: "expose_php", line: "expose_php = off" }
     notify: 
       - restart httpd
   tags:
@@ -149,7 +155,7 @@
       - initMailCatchall.sh
     when: kolab_patch.changed
 
-  - name: configure kolab.conf
+  - name: configure kolab for multidomains
     lineinfile: 
       dest: "/usr/share/roundcubemail/program/localization/{{ item.lang }}/labels.inc"
       regexp: "{{ item.regexp }}" 
@@ -159,6 +165,8 @@
       - { regexp: "username", line: "$labels['username']  = 'Email';", lang: "en_US" }
       - { regexp: "username", line: "$labels['username']  = 'Email';", lang: "de_DE" }
       - { regexp: "username", line: "$labels['username']  = 'Email';", lang: "de_CH" }
+      - { regexp: "username", line: "$labels['username']  = 'Email';", lang: "fr_FR" }
+      - { regexp: "username", line: "$labels['username']  = 'Email';", lang: "it_IT" }
 
   # SSL enable with certbot
   - block:
@@ -181,7 +189,7 @@
       when: kolab_change_httpd.changed
 
     - name: create {{ kolab_url }} zert
-      shell: certbot certonly --webroot -w /var/www/html/ -d {{ kolab_url }} --non-interactive --agree-tos --email webmaster@{{ kolab_url }}
+      shell: certbot certonly --webroot -w /var/www/html/ -d {{ kolab_url }} --rsa-key-size 4096 --non-interactive --agree-tos --email webmaster@{{ kolab_url }}
       args:
         creates: /etc/letsencrypt/live/{{ kolab_url }}
 
@@ -206,13 +214,13 @@
       cron:
         name: "certbot"
         hour: "2"
-        job: '/usr/bin/certbot renew --quiet --no-self-upgrade --post-hook "service httpd restart"'
+        job: '/usr/bin/certbot renew --rsa-key-size 4096 --quiet --no-self-upgrade --post-hook "systemctl reload httpd"'
   tags:
     - configuration
 
 - block:
   - name: create zert custom login
-    shell: certbot certonly --webroot -w /var/www/html/ -d {{ item.domain }} --non-interactive
+    shell: certbot certonly --rsa-key-size 4096 --webroot -w /var/www/html/ -d {{ item.domain }} --non-interactive
     args:
       creates: /etc/letsencrypt/live/{{ item.domain }}
     with_items:
@@ -233,7 +241,7 @@
     - configuration
 
 - block:
-  - name: check Domains list
+  - name: check domains list
     shell: "kolab list-domains"
     register: kolab_domains_list
 
@@ -242,6 +250,15 @@
     with_items:
       - "{{ domains }}"
     when: item is defined and item not in kolab_domains_list.stdout
+  - name: add domain settings
+    blockinfile: 
+      dest: "/etc/kolab/kolab.conf" 
+      block: |
+        [{{ item }}]
+        default_quota = 1048576
+        primary_mail = '%(givenname)s'[0:1].%(surname)s@%(domain)s
+    with_items:
+      - "{{ domains }}"
   tags:
     - configuration
 
