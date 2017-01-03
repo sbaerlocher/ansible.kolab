@@ -210,11 +210,11 @@
         - initSSL.sh
       when: kolab_cert_link.changed
 
-    - name: add certbot cron
+    - name: add apache reoload cron
       cron:
-        name: "certbot"
-        hour: "2"
-        job: '/usr/bin/certbot renew --rsa-key-size 4096 --quiet --no-self-upgrade --post-hook "systemctl reload httpd"'
+        name: "apache reload"
+        hour: "3"
+        job: "systemctl reload httpd"
   tags:
     - configuration
 
