@@ -214,7 +214,7 @@
       cron:
         name: "apache reload"
         hour: "3"
-        job: "systemctl reload httpd"
+        job: "/bin/systemctl reload httpd"
   tags:
     - configuration
 
